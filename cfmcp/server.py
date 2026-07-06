@@ -1,23 +1,33 @@
 import os
 
 from fastmcp import FastMCP
-from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
+from mcp.server.auth.settings import ClientRegistrationOptions
 
 from cfmcp.domains.dns_records import register_dns_record_tools
 from cfmcp.domains.zones import register_zone_tools
+from cfmcp.oauth import PasswordOAuthProvider, register_login_routes
 
 
-def _build_auth() -> StaticTokenVerifier:
-    token = os.environ.get("MCP_ACCESS_TOKEN")
-    if not token:
-        raise RuntimeError("MCP_ACCESS_TOKEN environment variable is not set")
-    return StaticTokenVerifier(tokens={token: {"client_id": "cloudflare-mcp"}})
+def _build_auth() -> PasswordOAuthProvider:
+    base_url = os.environ.get("MCP_BASE_URL")
+    password = os.environ.get("MCP_OAUTH_PASSWORD")
+    if not base_url:
+        raise RuntimeError("MCP_BASE_URL environment variable is not set")
+    if not password:
+        raise RuntimeError("MCP_OAUTH_PASSWORD environment variable is not set")
+    return PasswordOAuthProvider(
+        base_url=base_url,
+        password=password,
+        client_registration_options=ClientRegistrationOptions(enabled=True),
+    )
 
 
-mcp = FastMCP("cloudflare-mcp", auth=_build_auth())
+auth = _build_auth()
+mcp = FastMCP("cloudflare-mcp", auth=auth)
 
 register_zone_tools(mcp)
 register_dns_record_tools(mcp)
+register_login_routes(mcp, auth)
 
 app = mcp.http_app()
 
