@@ -1,43 +1,33 @@
 import os
 
 from fastmcp import FastMCP
-from fastmcp.exceptions import AuthorizationError
-from fastmcp.server.auth.providers.github import GitHubProvider
-from fastmcp.server.middleware import AuthMiddleware
+from mcp.server.auth.settings import ClientRegistrationOptions
 
 from cfmcp.domains.dns_records import register_dns_record_tools
 from cfmcp.domains.zones import register_zone_tools
+from cfmcp.oauth import PasswordOAuthProvider, register_login_routes
 
 
-def _build_auth() -> GitHubProvider:
-    client_id = os.environ.get("GITHUB_CLIENT_ID")
-    client_secret = os.environ.get("GITHUB_CLIENT_SECRET")
+def _build_auth() -> PasswordOAuthProvider:
     base_url = os.environ.get("MCP_BASE_URL")
-    if not client_id or not client_secret:
-        raise RuntimeError("GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET environment variables are not set")
+    password = os.environ.get("MCP_OAUTH_PASSWORD")
     if not base_url:
         raise RuntimeError("MCP_BASE_URL environment variable is not set")
-    return GitHubProvider(client_id=client_id, client_secret=client_secret, base_url=base_url)
-
-
-def _only_allowed_user() -> AuthMiddleware:
-    allowed_login = os.environ.get("ALLOWED_GITHUB_LOGIN")
-    if not allowed_login:
-        raise RuntimeError("ALLOWED_GITHUB_LOGIN environment variable is not set")
-
-    def check(ctx):
-        if ctx.token is None or ctx.token.claims.get("login") != allowed_login:
-            raise AuthorizationError("Not authorized")
-        return True
-
-    return AuthMiddleware(auth=check)
+    if not password:
+        raise RuntimeError("MCP_OAUTH_PASSWORD environment variable is not set")
+    return PasswordOAuthProvider(
+        base_url=base_url,
+        password=password,
+        client_registration_options=ClientRegistrationOptions(enabled=True),
+    )
 
 
 auth = _build_auth()
-mcp = FastMCP("cloudflare-mcp", auth=auth, middleware=[_only_allowed_user()])
+mcp = FastMCP("cloudflare-mcp", auth=auth)
 
 register_zone_tools(mcp)
 register_dns_record_tools(mcp)
+register_login_routes(mcp, auth)
 
 app = mcp.http_app()
 
