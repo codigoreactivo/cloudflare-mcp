@@ -124,3 +124,73 @@ def register_worker_script_tools(mcp: FastMCP) -> None:
             deployment_id, script_name=script_name, account_id=account_id
         )
         return deployment.model_dump(exclude_none=True)
+
+    @mcp.tool
+    async def create_worker_version(
+        script_name: str,
+        code: str,
+        compatibility_date: Optional[str] = None,
+        compatibility_flags: Optional[list[str]] = None,
+        bindings: Optional[list[dict]] = None,
+    ) -> dict:
+        """Stage a new version of a Worker WITHOUT routing any traffic to it — same parameters as
+        deploy_worker, but nothing goes live. Use this to test a change safely: stage it here, then
+        use set_worker_traffic_split to send it a small percentage of traffic (canary), and once
+        confident, rollback_worker (or another set_worker_traffic_split call) to send it 100%.
+        """
+        client = get_cloudflare_client()
+        account_id = await get_account_id()
+        metadata = compact(
+            main_module="worker.js",
+            compatibility_date=compatibility_date or DEFAULT_COMPATIBILITY_DATE,
+            compatibility_flags=compatibility_flags,
+            bindings=bindings,
+        )
+        result = await client.workers.scripts.versions.create(
+            script_name,
+            account_id=account_id,
+            metadata=metadata,
+            files=[("worker.js", code.encode(), "application/javascript+module")],
+        )
+        return result.model_dump(exclude_none=True)
+
+    @mcp.tool
+    async def set_worker_traffic_split(script_name: str, versions: list[dict]) -> dict:
+        """Split a Worker's live traffic across two or more versions for a gradual/canary rollout.
+
+        `versions` is a list of {"version_id": ..., "percentage": ...} and must sum to 100, e.g.
+        [{"version_id": "new", "percentage": 10}, {"version_id": "old", "percentage": 90}].
+        Get version ids from list_worker_versions or create_worker_version. For the common case of
+        sending 100% to a single version, use rollback_worker instead — it's the same underlying
+        call with less to get wrong.
+        """
+        client = get_cloudflare_client()
+        account_id = await get_account_id()
+        deployment = await client.workers.scripts.deployments.create(
+            script_name,
+            account_id=account_id,
+            strategy="percentage",
+            versions=versions,
+        )
+        return deployment.model_dump(exclude_none=True)
+
+    @mcp.tool
+    async def get_worker_schedules(script_name: str) -> list[dict]:
+        """List a Worker's Cron Triggers (scheduled executions, e.g. "0 0 * * *" for daily at midnight)."""
+        client = get_cloudflare_client()
+        account_id = await get_account_id()
+        response = await client.workers.scripts.schedules.get(script_name, account_id=account_id)
+        return [schedule.model_dump(exclude_none=True) for schedule in (response.schedules or [])]
+
+    @mcp.tool
+    async def set_worker_schedules(script_name: str, crons: list[str]) -> list[dict]:
+        """Replace a Worker's full set of Cron Triggers with `crons` (standard cron expressions,
+        e.g. ["0 0 * * *", "0 */6 * * *"]). This is a full replace, not an add — pass all schedules
+        you want to keep, or an empty list to remove all of them.
+        """
+        client = get_cloudflare_client()
+        account_id = await get_account_id()
+        response = await client.workers.scripts.schedules.update(
+            script_name, account_id=account_id, body=[{"cron": cron} for cron in crons]
+        )
+        return [schedule.model_dump(exclude_none=True) for schedule in (response.schedules or [])]

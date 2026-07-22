@@ -34,7 +34,7 @@ Requiere crear manualmente un OAuth Client en Google Cloud Console (no hay API p
 
 ## Variables de entorno
 
-- `CLOUDFLARE_API_TOKEN` — token de Cloudflare. Fase 1 requería solo `Zone→Zone→Read` y `Zone→DNS→Edit`; los tools de Workers requieren además permisos de cuenta: `Account→Workers Scripts→Edit`, `Account→Workers KV Storage→Edit` y `Zone→Workers Routes→Edit`. Un token solo-zona sigue funcionando para DNS — los tools de Workers fallan con un error claro en vez de romper el arranque.
+- `CLOUDFLARE_API_TOKEN` — token de Cloudflare. Fase 1 requería solo `Zone→Zone→Read` y `Zone→DNS→Edit`; fase 2 (Workers) requiere además `Account→Workers Scripts→Edit`, `Account→Workers KV Storage→Edit` y `Zone→Workers Routes→Edit` (cubre scripts, versiones, deployments, Cron Triggers, subdominio, dominios custom); R2 y D1 requieren sus propios grupos aparte: `Account→Workers R2 Storage→Edit` y `Account→D1→Edit`. Un token con menos permisos sigue funcionando para lo que sí cubre — los tools sin permiso fallan con un error claro (401/403) en vez de romper el arranque.
 - `CLOUDFLARE_ACCOUNT_ID` — opcional. Las APIs de Workers son account-scoped; si no se define, se autodescubre cuando el token ve exactamente una cuenta (requiere que el token pueda listar cuentas).
 - `MCP_BASE_URL` — URL pública del servidor (ej. `https://cfmcp.clicestrategico.com`), usada para construir las URLs de OAuth.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — credenciales del OAuth Client creado en Google Cloud Console.
@@ -73,9 +73,13 @@ Va en el proyecto **"Remote MCP"** existente (junto a Namecheap MCP y Google Dri
 
 **workers** —
 - Scripts: `list_workers`, `get_worker_code`, `deploy_worker` (worker de un solo módulo ES desde código fuente), `delete_worker`, `list_worker_versions`, `rollback_worker`, `list_worker_deployments`/`get_worker_deployment` (qué versión(es) están corriendo realmente y con qué split de tráfico — distinto de `list_worker_versions`, que solo lista versiones guardadas sin estado de despliegue)
+- Rollout gradual: `create_worker_version` (deja una versión lista sin mandarle tráfico) + `set_worker_traffic_split` (reparte tráfico entre 2+ versiones, ej. canary 10%/90%) — combinado con `rollback_worker` para el caso simple de 100% a una versión
+- Cron Triggers: `get_worker_schedules`, `set_worker_schedules` (reemplaza el set completo de crons del worker)
 - Routing: `get_workers_subdomain`, `set_worker_subdomain` (workers.dev), `list/create/delete_worker_route` (rutas por zona), `list/attach/detach_worker_domain` (dominios custom directos — Cloudflare crea DNS y certificado solo)
 - Secrets: `list_worker_secrets`, `set_worker_secret`, `delete_worker_secret`
 - KV: `list_kv_namespaces`, `create/delete_kv_namespace`, `list_kv_keys`, `kv_get`, `kv_put`, `kv_delete`
+- R2: `list_r2_buckets`, `create_r2_bucket`, `get_r2_bucket`, `delete_r2_bucket` (gestión de buckets; subida/lectura de objetos no incluida — mismo alcance que el MCP oficial de Cloudflare para este producto)
+- D1: `list_d1_databases`, `create_d1_database`, `get_d1_database`, `delete_d1_database`, `query_d1_database` (corre SQL real — DDL, SELECT, INSERT/UPDATE/DELETE)
 - Static sites: `deploy_static_site` — sube una web estática ya construida vía Workers Static Assets (manifest con hash `sha256(base64(contenido)+extensión)[:32]`, sesión de upload con JWT propio, deploy con completion JWT). Límite deliberado de 300 archivos / 10 MiB: el contenido viaja como argumentos MCP, no como filesystem. Acepta `worker_code` opcional para poner un Worker delante de los assets (con binding `ASSETS`).
 
 **Dónde termina el MCP y empieza wrangler:** este servidor es remoto — no ve los archivos locales de un proyecto. Workers de un archivo y sitios estáticos pequeños/medianos caben perfecto por MCP; apps con build (Vite/Astro/Next) y `node_modules` se despliegan con `wrangler deploy` local, y este MCP complementa gestionando rutas, dominios, secrets y KV después.
@@ -86,12 +90,30 @@ Va en el proyecto **"Remote MCP"** existente (junto a Namecheap MCP y Google Dri
 uv run --with fastmcp --with 'cloudflare>=5.4.0,<6' --with pytest python -m pytest tests/
 ```
 
-Cubren los helpers puros del flujo de assets (algoritmo de hash exacto de Cloudflare, manifest, límites) y dos tests a nivel de wire con `MockTransport`: que el multipart de `deploy_worker` nombra el módulo por filename (así resuelve `main_module`), y el flujo completo de `deploy_static_site` (sesión → upload autenticado con el JWT de sesión y partes por hash → deploy con el completion JWT).
+Cubren los helpers puros del flujo de assets (algoritmo de hash exacto de Cloudflare, manifest, límites) y tests a nivel de wire con `MockTransport` para cada tool de escritura: que el multipart de `deploy_worker` nombra el módulo por filename, el flujo completo de `deploy_static_site` (sesión → upload con JWT de sesión y partes por hash → deploy con completion JWT), que `create_worker_version` pega contra `/versions` y no `/scripts` (no debe ir live), que `set_worker_traffic_split` manda la lista completa de versiones sin recortarla, y las formas exactas de `set_worker_schedules`, `create_r2_bucket`/`list_r2_buckets` y `query_d1_database`.
+
+## Comparación con el MCP oficial de Cloudflare (`cloudflare/mcp-server-cloudflare`)
+
+Investigado 2026-07-22 leyendo su código fuente (no solo el README) antes de expandir esta fase 2. Son **complementarios, no redundantes**: el oficial está deliberadamente sesgado a lectura/observabilidad; este server cubre el lado de escritura/deploy que el oficial evita.
+
+| Producto | Oficial | Este MCP |
+|---|---|---|
+| Workers scripts | Solo lectura (`workers_list`, `workers_get_worker`, `workers_get_worker_code`) | Deploy/delete/versiones/rollback/canary/cron completos |
+| DNS/Zone | Solo lectura (`zone_details`, `zones_list`) | CRUD completo de registros |
+| Routing/dominios/secrets | No existe | Completo |
+| KV | Solo namespaces (CRUD), sin leer/escribir claves | Namespaces + lectura/escritura de claves |
+| R2 | Buckets (CRUD), sin objetos | Mismo alcance (buckets, sin objetos) |
+| D1 | CRUD + query SQL | Mismo alcance |
+| Logs/Observability | `query_worker_observability` — consulta real y funcional | Deliberadamente no duplicado, usar el oficial (`observability.mcp.cloudflare.com`) |
+| Workers Builds | Solo monitorea builds ya conectados por dashboard | No implementado — ver nota abajo |
+
+**Sobre Workers Builds:** conectar un repo Git nuevo por API **no es posible** — confirmado contra un issue abierto de Cloudflare (`cloudflare/workers-sdk#12058` pidiendo justamente ese endpoint) y la documentación oficial, que solo describe el flujo por dashboard (Settings → Builds → Connect). Lo único automatizable sin ese endpoint es *disparar* un rebuild de un proyecto ya conectado, vía un Deploy Hook — pero el Deploy Hook mismo también se crea solo por dashboard (Settings → Builds → Deploy Hooks), como paso manual único (mismo patrón que el OAuth Client de Google). No implementado aún porque depende de ese paso manual del usuario primero.
 
 ## Roadmap
 
 - Registrar (dominios comprados vía Cloudflare Registrar): listar/consultar, auto_renew/locked/privacy
 - Persistencia de clientes/tokens OAuth (SQLite) para sobrevivir restarts
-- R2 / D1 bindings
+- Hyperdrive bindings (pendiente confirmar si se usa)
 - Cache Purge / reglas WAF
-- Workers logs (tail) — es WebSocket, requiere diseño aparte
+- Workers logs (tail) — es WebSocket, y el MCP oficial ya cubre esta necesidad vía `query_worker_observability`; no duplicar sin razón concreta
+- `trigger_worker_build` — solo si el usuario crea un Deploy Hook manualmente primero (ver nota de Workers Builds arriba)

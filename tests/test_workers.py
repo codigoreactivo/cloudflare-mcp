@@ -15,6 +15,8 @@ import pytest
 
 import cfmcp.cf_client as cf_client
 import cfmcp.workers.assets as assets_mod
+import cfmcp.workers.d1 as d1_mod
+import cfmcp.workers.r2 as r2_mod
 import cfmcp.workers.scripts as scripts_mod
 from cfmcp.workers.assets import (
     asset_hash,
@@ -256,3 +258,150 @@ async def test_get_worker_deployment_hits_single_deployment_endpoint(account_env
 
     assert f"/accounts/{ACCOUNT_ID}/workers/scripts/my-worker/deployments/dep-2" in captured["url"]
     assert result.structured_content["id"] == "dep-2"
+
+
+@pytest.mark.anyio
+async def test_create_worker_version_hits_versions_endpoint_not_scripts(account_env, monkeypatch):
+    """A staged version must go to .../versions, never .../scripts (which would deploy it live)."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = request.read()
+        return httpx.Response(
+            200,
+            json={"success": True, "errors": [], "messages": [],
+                  "result": {"id": "ver-1", "number": 2, "resources": {}}},
+        )
+
+    monkeypatch.setattr(cf_client, "_client", make_sdk_client(handler))
+
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("test")
+    scripts_mod.register_worker_script_tools(mcp)
+    tool = await mcp.get_tool("create_worker_version")
+    result = await tool.run({"script_name": "my-worker", "code": "export default {}"})
+
+    assert captured["url"].endswith(f"/accounts/{ACCOUNT_ID}/workers/scripts/my-worker/versions")
+    assert result.structured_content["id"] == "ver-1"
+
+
+@pytest.mark.anyio
+async def test_set_worker_traffic_split_sends_full_version_list(account_env, monkeypatch):
+    """A canary split must send every {version_id, percentage} entry as-is — dropping one silently
+    would misroute traffic, the same class of bug as the fastmcp null-drop lesson."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"success": True, "errors": [], "messages": [], "result": {"id": "dep-3"}})
+
+    monkeypatch.setattr(cf_client, "_client", make_sdk_client(handler))
+
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("test")
+    scripts_mod.register_worker_script_tools(mcp)
+    tool = await mcp.get_tool("set_worker_traffic_split")
+    versions = [{"version_id": "new", "percentage": 10}, {"version_id": "old", "percentage": 90}]
+    await tool.run({"script_name": "my-worker", "versions": versions})
+
+    assert captured["body"]["versions"] == versions
+    assert captured["body"]["strategy"] == "percentage"
+
+
+@pytest.mark.anyio
+async def test_set_worker_schedules_replaces_full_cron_list(account_env, monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={"success": True, "errors": [], "messages": [],
+                  "result": {"schedules": [{"cron": "0 0 * * *"}, {"cron": "0 */6 * * *"}]}},
+        )
+
+    monkeypatch.setattr(cf_client, "_client", make_sdk_client(handler))
+
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("test")
+    scripts_mod.register_worker_script_tools(mcp)
+    tool = await mcp.get_tool("set_worker_schedules")
+    result = await tool.run({"script_name": "my-worker", "crons": ["0 0 * * *", "0 */6 * * *"]})
+
+    assert captured["url"].endswith(f"/accounts/{ACCOUNT_ID}/workers/scripts/my-worker/schedules")
+    assert captured["body"] == [{"cron": "0 0 * * *"}, {"cron": "0 */6 * * *"}]
+    schedules = result.structured_content["result"]
+    assert [s["cron"] for s in schedules] == ["0 0 * * *", "0 */6 * * *"]
+
+
+@pytest.mark.anyio
+async def test_create_r2_bucket_and_list(account_env, monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        if request.method == "POST":
+            captured["body"] = json.loads(request.read())
+            return httpx.Response(
+                200,
+                json={"success": True, "errors": [], "messages": [],
+                      "result": {"name": "my-bucket", "creation_date": "2026-07-22T00:00:00Z", "location": "wnam", "storage_class": "Standard"}},
+            )
+        return httpx.Response(
+            200,
+            json={"success": True, "errors": [], "messages": [],
+                  "result": {"buckets": [{"name": "my-bucket", "storage_class": "Standard"}]}},
+        )
+
+    monkeypatch.setattr(cf_client, "_client", make_sdk_client(handler))
+
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("test")
+    r2_mod.register_r2_tools(mcp)
+
+    create_tool = await mcp.get_tool("create_r2_bucket")
+    created = await create_tool.run({"name": "my-bucket", "location_hint": "wnam"})
+    # the SDK translates snake_case params to the camelCase the R2 API expects on the wire
+    assert captured["body"] == {"name": "my-bucket", "locationHint": "wnam"}
+    assert created.structured_content["name"] == "my-bucket"
+
+    list_tool = await mcp.get_tool("list_r2_buckets")
+    result = await list_tool.run({})
+    assert f"/accounts/{ACCOUNT_ID}/r2/buckets" in captured["url"]
+    buckets = result.structured_content["result"]
+    assert buckets[0]["name"] == "my-bucket"
+
+
+@pytest.mark.anyio
+async def test_query_d1_database_sends_sql_and_params(account_env, monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={"success": True, "errors": [], "messages": [],
+                  "result": [{"success": True, "results": [{"id": 1, "name": "a"}], "meta": {"rows_read": 1}}]},
+        )
+
+    monkeypatch.setattr(cf_client, "_client", make_sdk_client(handler))
+
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("test")
+    d1_mod.register_d1_tools(mcp)
+    tool = await mcp.get_tool("query_d1_database")
+    result = await tool.run({"database_id": "db-1", "sql": "SELECT * FROM users WHERE id = ?", "params": ["1"]})
+
+    assert captured["url"].endswith(f"/accounts/{ACCOUNT_ID}/d1/database/db-1/query")
+    assert captured["body"] == {"sql": "SELECT * FROM users WHERE id = ?", "params": ["1"]}
+    rows = result.structured_content["result"]
+    assert rows[0]["results"][0]["name"] == "a"

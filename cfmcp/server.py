@@ -8,7 +8,9 @@ from fastmcp.server.middleware import AuthMiddleware
 from cfmcp.domains.dns_records import register_dns_record_tools
 from cfmcp.domains.zones import register_zone_tools
 from cfmcp.workers.assets import register_worker_asset_tools
+from cfmcp.workers.d1 import register_d1_tools
 from cfmcp.workers.kv import register_worker_kv_tools
+from cfmcp.workers.r2 import register_r2_tools
 from cfmcp.workers.routing import register_worker_routing_tools
 from cfmcp.workers.scripts import register_worker_script_tools
 from cfmcp.workers.secrets import register_worker_secret_tools
@@ -56,6 +58,8 @@ register_worker_routing_tools(mcp)
 register_worker_secret_tools(mcp)
 register_worker_kv_tools(mcp)
 register_worker_asset_tools(mcp)
+register_r2_tools(mcp)
+register_d1_tools(mcp)
 
 app = mcp.http_app()
 
