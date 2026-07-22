@@ -72,7 +72,7 @@ Va en el proyecto **"Remote MCP"** existente (junto a Namecheap MCP y Google Dri
 **domains** — `list_zones`, `get_zone`, `list_dns_records`, `get_dns_record`, `create_dns_record`, `update_dns_record`, `delete_dns_record`
 
 **workers** —
-- Scripts: `list_workers`, `get_worker_code`, `deploy_worker` (worker de un solo módulo ES desde código fuente), `delete_worker`, `list_worker_versions`, `rollback_worker`
+- Scripts: `list_workers`, `get_worker_code`, `deploy_worker` (worker de un solo módulo ES desde código fuente), `delete_worker`, `list_worker_versions`, `rollback_worker`, `list_worker_deployments`/`get_worker_deployment` (qué versión(es) están corriendo realmente y con qué split de tráfico — distinto de `list_worker_versions`, que solo lista versiones guardadas sin estado de despliegue)
 - Routing: `get_workers_subdomain`, `set_worker_subdomain` (workers.dev), `list/create/delete_worker_route` (rutas por zona), `list/attach/detach_worker_domain` (dominios custom directos — Cloudflare crea DNS y certificado solo)
 - Secrets: `list_worker_secrets`, `set_worker_secret`, `delete_worker_secret`
 - KV: `list_kv_namespaces`, `create/delete_kv_namespace`, `list_kv_keys`, `kv_get`, `kv_put`, `kv_delete`

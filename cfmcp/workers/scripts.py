@@ -102,3 +102,25 @@ def register_worker_script_tools(mcp: FastMCP) -> None:
             versions=[{"percentage": 100, "version_id": version_id}],
         )
         return deployment.model_dump(exclude_none=True)
+
+    @mcp.tool
+    async def list_worker_deployments(script_name: str) -> list[dict]:
+        """List a Worker's deployment history (newest first): each entry shows which version(s)
+        are live and the traffic split between them (e.g. a canary at 10%/90%), when it was
+        deployed, and by whom. This is the "what's actually running right now" view — distinct
+        from list_worker_versions, which only lists stored versions without deployment/traffic state.
+        """
+        client = get_cloudflare_client()
+        account_id = await get_account_id()
+        response = await client.workers.scripts.deployments.list(script_name, account_id=account_id)
+        return [deployment.model_dump(exclude_none=True) for deployment in response.deployments]
+
+    @mcp.tool
+    async def get_worker_deployment(script_name: str, deployment_id: str) -> dict:
+        """Get full detail on one Worker deployment by id (from list_worker_deployments)."""
+        client = get_cloudflare_client()
+        account_id = await get_account_id()
+        deployment = await client.workers.scripts.deployments.get(
+            deployment_id, script_name=script_name, account_id=account_id
+        )
+        return deployment.model_dump(exclude_none=True)

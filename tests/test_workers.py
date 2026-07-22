@@ -15,6 +15,7 @@ import pytest
 
 import cfmcp.cf_client as cf_client
 import cfmcp.workers.assets as assets_mod
+import cfmcp.workers.scripts as scripts_mod
 from cfmcp.workers.assets import (
     asset_hash,
     build_manifest,
@@ -178,3 +179,80 @@ async def test_deploy_static_site_full_flow(account_env, monkeypatch):
     structured = result.structured_content
     assert structured["deployed"] is True
     assert structured["assets_uploaded"] == 1
+
+
+@pytest.mark.anyio
+async def test_list_worker_deployments_surfaces_traffic_split(account_env, monkeypatch):
+    """list_worker_deployments must expose the live traffic split (versions + percentage),
+    not just a bare version list — that distinction from list_worker_versions is the whole
+    point of this tool."""
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True, "errors": [], "messages": [],
+                "result": {
+                    "deployments": [
+                        {
+                            "id": "dep-2",
+                            "created_on": "2026-07-22T00:00:00Z",
+                            "source": "api",
+                            "strategy": "percentage",
+                            "author_email": "a@b.com",
+                            "versions": [
+                                {"version_id": "v2", "percentage": 90},
+                                {"version_id": "v1", "percentage": 10},
+                            ],
+                        }
+                    ]
+                },
+            },
+        )
+
+    monkeypatch.setattr(cf_client, "_client", make_sdk_client(handler))
+
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("test")
+    scripts_mod.register_worker_script_tools(mcp)
+    tool = await mcp.get_tool("list_worker_deployments")
+    result = await tool.run({"script_name": "my-worker"})
+
+    assert f"/accounts/{ACCOUNT_ID}/workers/scripts/my-worker/deployments" in captured["url"]
+    deployments = result.structured_content["result"]
+    assert deployments[0]["id"] == "dep-2"
+    versions = deployments[0]["versions"]
+    assert {v["version_id"]: v["percentage"] for v in versions} == {"v2": 90, "v1": 10}
+
+
+@pytest.mark.anyio
+async def test_get_worker_deployment_hits_single_deployment_endpoint(account_env, monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={
+                "success": True, "errors": [], "messages": [],
+                "result": {
+                    "id": "dep-2", "created_on": "2026-07-22T00:00:00Z", "source": "api",
+                    "strategy": "percentage", "versions": [{"version_id": "v2", "percentage": 100}],
+                },
+            },
+        )
+
+    monkeypatch.setattr(cf_client, "_client", make_sdk_client(handler))
+
+    from fastmcp import FastMCP
+
+    mcp = FastMCP("test")
+    scripts_mod.register_worker_script_tools(mcp)
+    tool = await mcp.get_tool("get_worker_deployment")
+    result = await tool.run({"script_name": "my-worker", "deployment_id": "dep-2"})
+
+    assert f"/accounts/{ACCOUNT_ID}/workers/scripts/my-worker/deployments/dep-2" in captured["url"]
+    assert result.structured_content["id"] == "dep-2"
