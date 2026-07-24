@@ -173,6 +173,17 @@ async def handle_mcp_request(msg, writer) -> None:
 
 async def handle_extension(reader, writer) -> None:
     global extension_writer
+    # Solo se sigue una extensión a la vez. Si ya había una conectada (p.ej.
+    # el usuario tiene la extensión cargada en dos navegadores, o un proceso
+    # viejo no llegó a desconectarse limpio), se cierra explícitamente en vez
+    # de dejarla huérfana: conectada a nivel de socket pero nunca más
+    # referenciada, y por tanto inalcanzable para futuras peticiones.
+    if extension_writer is not None and extension_writer is not writer:
+        log.info("nueva conexión de extensión: cerrando la anterior")
+        try:
+            extension_writer.close()
+        except Exception:  # noqa: BLE001
+            pass
     extension_writer = writer
     log.info("extensión conectada")
     try:

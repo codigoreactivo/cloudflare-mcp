@@ -43,7 +43,10 @@ async function handleNativeMessage(msg) {
   if (!msg || msg.type !== "request") return;
   try {
     const tab = await getDedicatedTab();
-    await openFreshChat(tab.id);
+    // Defensa extra: si el usuario cambió de pestaña justo después de
+    // getDedicatedTab, se reactiva antes de empezar a generar (ver nota
+    // sobre timers throttled en pestañas ocultas más arriba).
+    await activateTab(tab);
     const result = await sendToContentScript(tab.id, {
       type: "generate_image",
       prompt: msg.prompt,
@@ -62,34 +65,50 @@ async function handleNativeMessage(msg) {
   }
 }
 
-// Usa SIEMPRE una pestaña dedicada, en segundo plano, para no inyectar prompts
-// en la conversación que el usuario tenga abierta. El daemon serializa las
+// Usa SIEMPRE una pestaña dedicada para no inyectar prompts en la
+// conversación que el usuario tenga abierta. El daemon serializa las
 // peticiones, así que nunca hay dos generaciones compitiendo por esta pestaña.
+//
+// IMPORTANTE: la pestaña se mantiene ACTIVA (en primer plano) durante toda la
+// generación, y no en segundo plano como en un diseño anterior. Se probó en
+// vivo que Chrome/Brave detienen o retrasan severamente los timers
+// (setTimeout) de una pestaña oculta —confirmado: un setTimeout de 2s sin
+// disparar ni una vez en 40s reales— y además difieren la descarga/decode de
+// imágenes (naturalWidth se queda en 0) mientras la pestaña no es visible.
+// Como content.js depende de sondear el DOM con setTimeout y de que las
+// imágenes carguen, una pestaña en segundo plano hace que la generación
+// nunca se detecte y se cuelgue hasta el timeout. El costo es de UX: la
+// pestaña salta al frente durante cada generación (igual que hace Claude in
+// Chrome).
+async function activateTab(tab) {
+  await chrome.tabs.update(tab.id, { active: true });
+  await chrome.windows.update(tab.windowId, { focused: true });
+}
+
+// No se reutilizan pestañas entre peticiones: una que estuvo minutos en
+// segundo plano puede haber sido "descargada" de memoria por el navegador
+// (discard, para ahorrar RAM), y reactivarla dispara una recarga implícita
+// que puede solaparse con nuestra propia navegación y dejar el DOM a medias
+// justo cuando content.js intenta leer el mensaje generado (visto en vivo:
+// "No se encontró el mensaje del asistente" con el mensaje ya borrado del
+// DOM). Crear una pestaña nueva cada vez es más simple y evita toda esa
+// clase de estados raros; el costo es solo una pestaña extra por petición
+// (el daemon ya serializa, así que nunca hay más de una activa a la vez).
 async function getDedicatedTab() {
   if (dedicatedTabId !== null) {
     try {
-      const tab = await chrome.tabs.get(dedicatedTabId);
-      if (tab && /chatgpt\.com|chat\.openai\.com/.test(tab.url || tab.pendingUrl || "")) {
-        return tab;
-      }
+      await chrome.tabs.remove(dedicatedTabId);
     } catch (e) {
-      // la pestaña fue cerrada por el usuario; se recrea abajo
+      // ya no existía; no pasa nada
     }
     dedicatedTabId = null;
   }
-  const tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: false });
+  const tab = await chrome.tabs.create({ url: "https://chatgpt.com/", active: true });
   dedicatedTabId = tab.id;
+  await activateTab(tab);
   await waitForTabComplete(tab.id);
-  return tab;
-}
-
-// Arranca una conversación nueva antes de cada petición, para no acumular
-// mensajes en un hilo existente ni cruzar respuestas entre peticiones.
-async function openFreshChat(tabId) {
-  await chrome.tabs.update(tabId, { url: "https://chatgpt.com/" });
-  await sleep(400); // deja que el estado de la pestaña pase a "loading"
-  await waitForTabComplete(tabId);
   await sleep(1500); // margen para que content.js termine de inicializarse
+  return tab;
 }
 
 function waitForTabComplete(tabId) {

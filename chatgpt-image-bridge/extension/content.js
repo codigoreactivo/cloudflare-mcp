@@ -15,7 +15,14 @@ const SELECTORS = {
     'button[data-testid="stop-button"]',
     'button[aria-label="Stop generating"]',
   ],
-  assistantMessage: '[data-message-author-role="assistant"]',
+  // `[data-message-author-role="assistant"]` solo existe mientras el mensaje
+  // está en streaming activo; una vez la conversación se asienta, ese
+  // atributo desaparece del DOM (verificado en vivo: 0 coincidencias en una
+  // conversación ya completada). `data-testid="conversation-turn-N"` es la
+  // marca estable que persiste en el estado final; los turnos alternan
+  // usuario/asistente en orden estricto, así que el último turno del DOM es
+  // siempre el más reciente.
+  conversationTurn: '[data-testid^="conversation-turn-"]',
 };
 
 function querySelectorFirst(selectors) {
@@ -107,12 +114,15 @@ async function sendPromptAndWaitForImages(prompt, timeoutMs = 180000) {
     );
   }
 
-  const messagesBefore = document.querySelectorAll(SELECTORS.assistantMessage).length;
+  const turnsBefore = document.querySelectorAll(SELECTORS.conversationTurn).length;
   sendBtn.click();
 
   const start = Date.now();
 
-  while (document.querySelectorAll(SELECTORS.assistantMessage).length <= messagesBefore) {
+  // +2: el turno del propio usuario (echo) y el turno de respuesta del
+  // asistente, que alternan estrictamente en el DOM. Esperar ambos evita
+  // adelantarse a un estado donde solo existe el echo del usuario.
+  while (document.querySelectorAll(SELECTORS.conversationTurn).length < turnsBefore + 2) {
     if (Date.now() - start > timeoutMs) {
       throw new Error("Timeout esperando la respuesta del asistente.");
     }
@@ -128,9 +138,9 @@ async function sendPromptAndWaitForImages(prompt, timeoutMs = 180000) {
   // margen para que la(s) imagen(es) terminen de cargar en el DOM
   await sleep(1000);
 
-  const lastMsg = Array.from(document.querySelectorAll(SELECTORS.assistantMessage)).pop();
+  const lastMsg = Array.from(document.querySelectorAll(SELECTORS.conversationTurn)).pop();
   if (!lastMsg) {
-    throw new Error("No se encontró el mensaje del asistente.");
+    throw new Error("No se encontró el turno de respuesta del asistente.");
   }
   const imgs = Array.from(lastMsg.querySelectorAll("img")).filter(
     (img) => img.naturalWidth > 64
