@@ -9,7 +9,7 @@ cfmcp/
   server.py              # instancia FastMCP + auth (Google OAuth) + registro de tools + ASGI app
   cf_client.py            # AsyncCloudflare client (CLOUDFLARE_API_TOKEN) + resolución de account_id
   domains/
-    zones.py              # list_zones, get_zone
+    zones.py              # list_zones, get_zone, create_zone
     dns_records.py        # list_dns_records, get_dns_record, create_dns_record, update_dns_record, delete_dns_record
   workers/
     scripts.py            # list_workers, get_worker_code, deploy_worker, delete_worker, versiones + rollback
@@ -34,7 +34,7 @@ Requiere crear manualmente un OAuth Client en Google Cloud Console (no hay API p
 
 ## Variables de entorno
 
-- `CLOUDFLARE_API_TOKEN` — token de Cloudflare. Fase 1 requería solo `Zone→Zone→Read` y `Zone→DNS→Edit`; fase 2 (Workers) requiere además `Account→Workers Scripts→Edit`, `Account→Workers KV Storage→Edit` y `Zone→Workers Routes→Edit` (cubre scripts, versiones, deployments, Cron Triggers, subdominio, dominios custom); R2 y D1 requieren sus propios grupos aparte: `Account→Workers R2 Storage→Edit` y `Account→D1→Edit`. Un token con menos permisos sigue funcionando para lo que sí cubre — los tools sin permiso fallan con un error claro (401/403) en vez de romper el arranque.
+- `CLOUDFLARE_API_TOKEN` — token de Cloudflare. Fase 1 requería solo `Zone→Zone→Read` y `Zone→DNS→Edit`, pero `create_zone` necesita `Zone→Zone→**Edit**` y, en *Zone Resources*, `Include → All zones from an account` (un token acotado a zonas específicas no puede crear zonas nuevas: la zona todavía no existe para poder seleccionarla); fase 2 (Workers) requiere además `Account→Workers Scripts→Edit`, `Account→Workers KV Storage→Edit` y `Zone→Workers Routes→Edit` (cubre scripts, versiones, deployments, Cron Triggers, subdominio, dominios custom); R2 y D1 requieren sus propios grupos aparte: `Account→Workers R2 Storage→Edit` y `Account→D1→Edit`. Un token con menos permisos sigue funcionando para lo que sí cubre — los tools sin permiso fallan con un error claro (401/403) en vez de romper el arranque.
 - `CLOUDFLARE_ACCOUNT_ID` — opcional. Las APIs de Workers son account-scoped; si no se define, se autodescubre cuando el token ve exactamente una cuenta (requiere que el token pueda listar cuentas).
 - `MCP_BASE_URL` — URL pública del servidor (ej. `https://cfmcp.clicestrategico.com`), usada para construir las URLs de OAuth.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — credenciales del OAuth Client creado en Google Cloud Console.
@@ -69,7 +69,9 @@ Va en el proyecto **"Remote MCP"** existente (junto a Namecheap MCP y Google Dri
 
 ## Tools disponibles
 
-**domains** — `list_zones`, `get_zone`, `list_dns_records`, `get_dns_record`, `create_dns_record`, `update_dns_record`, `delete_dns_record`
+**domains** — `list_zones`, `get_zone`, `create_zone`, `list_dns_records`, `get_dns_record`, `create_dns_record`, `update_dns_record`, `delete_dns_record`
+
+`create_zone` da de alta un dominio y devuelve los nameservers a poner en el registrador. Crea la zona **vacía**: Cloudflare no copia los registros existentes por API (eso solo lo hace el escaneo del dashboard), así que hay que recrearlos con `create_dns_record` *antes* de cambiar los NS o el dominio se cae al momento del switch. No hay `delete_zone` a propósito — borrar una zona es destructivo y difícil de deshacer.
 
 **workers** —
 - Scripts: `list_workers`, `get_worker_code`, `deploy_worker` (worker de un solo módulo ES desde código fuente), `delete_worker`, `list_worker_versions`, `rollback_worker`, `list_worker_deployments`/`get_worker_deployment` (qué versión(es) están corriendo realmente y con qué split de tráfico — distinto de `list_worker_versions`, que solo lista versiones guardadas sin estado de despliegue)
