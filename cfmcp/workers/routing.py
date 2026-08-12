@@ -61,7 +61,7 @@ def register_worker_routing_tools(mcp: FastMCP) -> None:
         return domains
 
     @mcp.tool
-    async def attach_worker_domain(hostname: str, service: str, zone_id: str, environment: str = "production") -> dict:
+    async def attach_worker_domain(hostname: str, service: str, zone_id: str) -> dict:
         """Attach a custom domain (e.g. app.example.com) directly to a Worker. Cloudflare creates the DNS record and certificate automatically — no route or manual DNS needed."""
         client = get_cloudflare_client()
         account_id = await get_account_id()
@@ -70,7 +70,6 @@ def register_worker_routing_tools(mcp: FastMCP) -> None:
             hostname=hostname,
             service=service,
             zone_id=zone_id,
-            environment=environment,
         )
         return domain.model_dump(exclude_none=True)
 
