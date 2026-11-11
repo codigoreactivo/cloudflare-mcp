@@ -15,6 +15,17 @@ from cfmcp.workers.routing import register_worker_routing_tools
 from cfmcp.workers.scripts import register_worker_script_tools
 from cfmcp.workers.secrets import register_worker_secret_tools
 
+# Only Claude (web, desktop and mobile apps share the claude.ai callback) and
+# local CLI clients (Claude Code, Codex) may receive authorization codes.
+# Any other redirect URI is refused at registration, so a stranger can't
+# register a client pointing at their own site and phish a login.
+ALLOWED_CLIENT_REDIRECT_URIS = [
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+    "http://localhost:*",
+    "http://127.0.0.1:*",
+]
+
 
 def _build_auth() -> GoogleProvider:
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
@@ -29,6 +40,7 @@ def _build_auth() -> GoogleProvider:
         client_secret=client_secret,
         base_url=base_url,
         required_scopes=["openid", "email"],
+        allowed_client_redirect_uris=ALLOWED_CLIENT_REDIRECT_URIS,
     )
 
 
@@ -61,7 +73,9 @@ register_worker_asset_tools(mcp)
 register_r2_tools(mcp)
 register_d1_tools(mcp)
 
-app = mcp.http_app()
+# Stateless: no tool uses server-side session state, and without it a redeploy
+# or a VPS reboot doesn't leave clients holding a dead session id.
+app = mcp.http_app(stateless_http=True)
 
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=8000)
